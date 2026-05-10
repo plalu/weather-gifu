@@ -1,0 +1,36 @@
+name: morning-weather
+
+on:
+  schedule:
+    - cron: '25 21 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate WAV
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OUTPUT_PATH: today.wav
+          TZ: Asia/Tokyo
+        run: python main.py
+
+      - name: Upload to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete today --yes --cleanup-tag 2>/dev/null || true
+          gh release create today today.wav \
+            --title "today" \
+            --notes "Generated $(date -Iseconds)"
