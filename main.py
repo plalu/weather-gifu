@@ -8,7 +8,7 @@ import urllib.parse
 
 JMA_FORECAST = "https://www.jma.go.jp/bosai/forecast/data/forecast/210000.json"
 JMA_OVERVIEW = "https://www.jma.go.jp/bosai/forecast/data/overview_forecast/210000.json"
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"
 TTS_QUEST_URL = "https://api.tts.quest/v3/voicevox/synthesis"
 SPEAKER_ID = 8
 OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "today.wav")
@@ -137,7 +137,7 @@ def rule_based_advice(w, felt_temp):
     return gear + rain
 
 
-def groq_advice(w, felt_temp, api_key):
+def cerebras_advice(w, felt_temp, api_key):
     prompt = (
         "あなたは岐阜市でバイク通勤するライダー向けのアドバイザーです。"
         "以下の天気データから、80字以内の自然な日本語アドバイスを1文で生成してください。"
@@ -148,13 +148,13 @@ def groq_advice(w, felt_temp, api_key):
         f"降水確率(朝):{w['pop_morning']}% (夕):{w['pop_evening']}%"
     )
     body = json.dumps({
-        "model": "llama-3.3-70b-versatile",
+        "model": "qwen-3-235b-a22b-instruct-2507",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.5,
         "max_tokens": 200,
     }).encode("utf-8")
     res = http_json(
-        GROQ_URL,
+        CEREBRAS_URL,
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -169,16 +169,13 @@ def build_advice(w):
     base_temp = w["temp_min"] if w["temp_min"] is not None else 10
     felt_temp = base_temp + wind_correction(w["wind_text"])
 
-    api_key = os.environ.get("GROQ_API_KEY")
+    api_key = os.environ.get("CEREBRAS_API_KEY")
     if api_key:
-        head = api_key[:6]
-        tail = api_key[-4:]
-        print(f"[debug] groq key len={len(api_key)} head={head!r} tail={tail!r}", file=sys.stderr)
         try:
-            advice = groq_advice(w, felt_temp, api_key)
+            advice = cerebras_advice(w, felt_temp, api_key)
             return felt_temp, advice
         except Exception as e:
-            print(f"[warn] groq failed: {e}", file=sys.stderr)
+            print(f"[warn] cerebras failed: {e}", file=sys.stderr)
     return felt_temp, rule_based_advice(w, felt_temp)
 
 
