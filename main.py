@@ -171,6 +171,9 @@ def build_advice(w):
 
     api_key = os.environ.get("GROQ_API_KEY")
     if api_key:
+        head = api_key[:6]
+        tail = api_key[-4:]
+        print(f"[debug] groq key len={len(api_key)} head={head!r} tail={tail!r}", file=sys.stderr)
         try:
             advice = groq_advice(w, felt_temp, api_key)
             return felt_temp, advice
