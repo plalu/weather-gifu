@@ -77,20 +77,22 @@ def fetch_weather():
 
     if temp_min is None or temp_max is None:
         try:
-            week = forecast[1]["timeSeries"]
-            for s in week:
+            for s in forecast[1]["timeSeries"]:
                 for a in s.get("areas", []):
-                    if "tempsMin" not in a and "tempsMax" not in a:
-                        continue
-                    for t, lo, hi in zip(s["timeDefines"], a.get("tempsMin", []), a.get("tempsMax", [])):
-                        if not t.startswith(today_str):
-                            continue
-                        if temp_min is None and lo:
-                            temp_min = int(lo)
-                        if temp_max is None and hi:
-                            temp_max = int(hi)
-        except Exception:
-            pass
+                    tmins = a.get("tempsMin", [])
+                    tmaxs = a.get("tempsMax", [])
+                    for v in tmins:
+                        if v and temp_min is None:
+                            temp_min = int(v)
+                            break
+                    for v in tmaxs:
+                        if v and temp_max is None:
+                            temp_max = int(v)
+                            break
+        except Exception as e:
+            print(f"[warn] week fallback failed: {e}", file=sys.stderr)
+
+    print(f"[debug] temp_min={temp_min}, temp_max={temp_max}", file=sys.stderr)
 
     return {
         "summary": weather_text.split()[0] if weather_text else "不明",
