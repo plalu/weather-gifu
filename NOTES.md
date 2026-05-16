@@ -1,94 +1,95 @@
 # weather-gifu 開発メモ・振り返り
 
-> 2026-05-11 作成。クラウド運用を再検討する際の参考資料。
+> 2026-05-11 作成 / 2026-05-16 大規模更新（クラウド版リベンジ成功）
 
-## 現在の構成（採用版）
+## 現在の構成（採用版・2026-05-16〜）
 
-**N100 ローカル + Drive 中継方式**
+**GitHub Actions + GitHub Models + GitHub Releases 配信方式**
 
 ```
-N100 (常時稼働・住宅IP)
-  ├ Windows タスクスケジューラ (毎朝)
+GitHub Actions (毎朝 06:25 JST = 21:25 UTC cron)
   ├ python main.py 実行
   │   ├ 気象庁API (210000) → 天気/気温/降水確率
-  │   ├ Groq or Cerebras API → AIアドバイス生成
+  │   ├ GitHub Models (openai/gpt-4o-mini) → AIアドバイス生成
   │   └ TTS Quest VOICEVOX API → WAV合成
   │
-  ├ G:\マイドライブ\weather\today.wav に書き出し
-  └ Google Drive for Desktop が自動同期
+  └ gh release create today today.wav (上書き)
        ↓
-Google Drive クラウド
+GitHub Releases (固定URL)
+  https://github.com/plalu/weather-gifu/releases/download/today/today.wav
        ↓
 Android (MacroDroid 7:30 起動)
-  ├ HTTPリクエスト → Driveの直接DLリンクから today.wav 取得
+  ├ HTTPリクエスト → 上記URLから today.wav 取得
   └ サウンド再生 (春日部つむぎ)
 ```
 
 採用理由：
-- N100は日本の住宅IPなので Groq/Cerebras が動く
-- 既存の Google Drive 連携を活かせる
-- MacroDroid 無料版でも HTTP リクエストアクションで対応可能
+- **GitHub Models は GITHUB_TOKEN だけで動く**（IPブロックの心配なし、APIキー登録不要）
+- 配信URLが固定で MacroDroid 側の設定変更が不要
+- ローカルマシン常時稼働の必要なし（GitHub Actions が代行）
+- 月額コスト 0 円
 
 ---
 
-## クラウド版（GitHub Actions）を断念した理由
+## 旧構成（停止中・2026-05-16 で凍結）
 
-### 致命的問題：AI API の IP ブロック
+**N100 ローカル + Google Drive 中継方式**
 
-**症状**：GitHub Actions から Groq / Cerebras の無料枠 API を叩くと 403 Forbidden。
-ローカル(日本IP)から同じキーで叩くと 200 OK。
+- ファイル：`C:\Users\main\weather_gifu.py`
+- タスク：`VOICEVOX_AutoStart`(6:25) / `WeatherGifu_Daily`(6:30) → **どちらも Disabled**
+- 出力：`G:\マイドライブ\weather\today.wav`
+- AIチェーン：Groq → Cerebras → Gemini → ルールベース（4段）
+- 追加機能：走行ハザード4種（凍結・強風・濡れ路面・熱中症）、wind_correction substring バグ修正
 
-**原因**：両社とも無料枠は Azure / AWS などクラウド DC の IP からのアクセスをブロック。
-無料枠の不正利用防止策と思われる（業界全体の傾向）。
+スクリプト・タスク・WAVファイルはすべて保持。下記コマンドで即復活可能：
 
-**確認した範囲**：
-- ❌ Groq (`llama-3.3-70b-versatile`)
-- ❌ Cerebras (`qwen-3-235b-a22b-instruct-2507`)
-- 未検証：Gemini API、GitHub Models、Mistral、Cohere
-
-### 残ったクラウド版コード（無効化済）
-
-- `.github/workflows/morning.yml` ─ Disabled 状態で残置（Enable で復活可）
-- ルールベースアドバイスでフォールバックすれば動作はする
-- ただし AI なしだと「メッシュジャケットと薄手グローブで快適に走れます」程度の定型文
-
----
-
-## クラウド版を復活させる場合の選択肢
-
-優先度順：
-
-### A. GitHub Models（最有力）
-
-GitHub 純正の無料 AI 推論サービス。
-
-- 料金：無料（個人）
-- 認証：`secrets.GITHUB_TOKEN` 自動付与、APIキー登録不要
-- モデル：`openai/gpt-4o-mini`、Llama 3.3 70B、Phi、Mistral 等
-- API形式：OpenAI 互換
-- エンドポイント：`https://models.inference.ai.azure.com/chat/completions`
-- IPブロック問題：なし（GitHub 内部サービス）
-
-ワークフロー追加設定：
-```yaml
-permissions:
-  models: read
+```powershell
+schtasks /Change /TN "VOICEVOX_AutoStart" /ENABLE
+schtasks /Change /TN "WeatherGifu_Daily" /ENABLE
 ```
 
-### B. Google Gemini API
+ローカル版で実装したハザード4種と wind_correction バグ修正はクラウド版に未移植。
+品質向上が必要になったら移植検討。
 
-- 無料枠：Gemini Flash で 1500req/日
-- クラウドIPでも通る可能性高
-- 公式SDKあり
+---
 
-### C. Cloudflare Workers AI
+## クラウド版リベンジの経緯（2026-05-16）
 
-- 無料枠あり、Llama/Qwen 系利用可
-- Workers でなく REST API でも叩ける
+### 一度断念した原因（旧記録）
 
-### D. 有料プラン (Groq / Cerebras / OpenAI)
+GitHub Actions から Groq / Cerebras の無料枠 API を叩くと 403 Forbidden。
+両社とも無料枠は Azure / AWS など**クラウドDCのIPからのアクセスをブロック**。
+ローカル(日本住宅IP)から同じキーで叩けば 200 OK。
 
-月 $5〜程度の少額課金で IP制限が消える。
+### 解決策：GitHub Models へ全面移行
+
+GitHub 純正の無料AI推論サービス。**workflowのGITHUB_TOKENで認証**するため IP制限の対象外。
+
+実装差分（コミット `bfd9f41`）：
+- `cerebras_advice` → `github_models_advice` に書き換え
+- エンドポイント：`https://models.github.ai/inference/chat/completions`
+- モデル：`openai/gpt-4o-mini`（日本語品質良好・無料枠でも余裕の rate limit）
+- ワークフロー：`permissions: models: read` を追加、`CEREBRAS_API_KEY` env を `GITHUB_TOKEN` に置換
+- 不要になった secret `CEREBRAS_API_KEY` は残置可（再利用時に備える）
+
+### 動作確認結果（2026-05-16 14:34 JST 手動実行）
+
+- ✅ workflow run `25953970322` success
+- ✅ today.wav 1.76 MB 生成
+- ✅ Release `today` 上書き完了
+
+---
+
+## 他のクラウドAI候補（万一の予備）
+
+GitHub Models が落ちた・廃止された場合の選択肢。
+
+| 候補 | 無料枠 | IP制限 | 備考 |
+|---|---|---|---|
+| Google Gemini API | Flash 1500req/日 | なし | 公式SDKあり |
+| Cloudflare Workers AI | あり | なし | Llama/Qwen 系 |
+| Groq / Cerebras | あり | **クラウドDC不可** | 有料化(月$5〜)で解除可 |
+| Ollama on N100 | 無制限 | N/A | ローカルなので機材必要 |
 
 ---
 
@@ -114,12 +115,19 @@ permissions:
 
 8. **cron は UTC**。`'25 21 * * *'` で JST 06:25 起動。
 9. **最大 15 分の遅延あり**。クリティカルな時刻指定は要バッファ。
-10. **Node.js 20 deprecation 警告**は無視可（2026年6月以降に Node.js 24 へ移行）。
+10. **長期間 push のないリポジトリは workflow が自動 disable** される場合あり。
+    `disabled_manually` 状態になったら手動で再 enable が必要。
 
 ### GitHub Secret 関連
 
 11. **登録後は中身を再確認できない**。設定ミス疑い時はワークフローで `len()` `head/tail` をログ出力して切り分け。
 12. **重要操作時は sudo mode** が発動、メール認証が必要。
+
+### Wind correction の substring バグ（ローカル版で発見・未移植）
+
+13. `"強く" in wind_text` は `"やや強く"` にも誤マッチする。
+    elif の順序を `非常に強 → やや強 → 強く → else` にするか、`wind_text.replace("やや強く","")` で除外してから判定する。
+    現状のクラウド版 main.py にもこのバグが残っている（やや強の日に -10℃補正される）。
 
 ---
 
@@ -130,14 +138,18 @@ permissions:
 - [ ] **生成失敗時の通知**：失敗時に Slack/LINE/メール通知（前日WAV再生を防ぐ）
 - [ ] **メタデータ同時出力**：`today.json` に生成時刻を入れ、MacroDroid側で当日チェック
 - [ ] **温度サニティチェック**：気温が -10℃ 未満 / 50℃ 超なら警告（JMAパースバグ早期発見）
-- [ ] **GROQ_API_KEY / CEREBRAS_API_KEY をローカル環境変数化**して `main.py` からハードコード除去
+- [ ] **wind_correction substring バグ修正**（ローカル版から移植）
 
 ### 中長期改善
 
-- [ ] **VOICEVOX をN100ローカル直接実行**（TTS Quest 依存をなくす）
-- [ ] **複数AI のフォールバックチェーン**：Cerebras → Groq → Gemini → ルールベース
-- [ ] **GitHub Models を一度試して動くか確認**（クラウド再挑戦用）
-- [ ] **N100 で Ollama + Qwen 2.5 3B Q4_K_M** をフォールバック用に常駐（クラウドAPI全滅時の保険）
+- [ ] **走行ハザード4種をローカル版から移植**（凍結・強風・濡れ路面・熱中症の3文目アドバイス）
+- [ ] **モデルアップグレード検討**：gpt-4o-mini → gpt-4o or Llama-3.3-70B（品質次第）
+- [ ] **MacroDroid マクロをエクスポートしてリポジトリに保管**（環境再構築時の備え）
+
+### 完了済み
+
+- [x] **クラウド版を GitHub Models で復活**（2026-05-16）
+- [x] **ローカル版の自動実行を停止**（2026-05-16、ファイル・タスクは保持）
 
 ---
 
@@ -148,15 +160,16 @@ weather-gifu/
 ├ main.py                       # メインスクリプト（標準ライブラリのみ）
 ├ requirements.txt              # 空（追加依存なし）
 ├ .gitignore                    # *.wav, __pycache__, .env
-├ .github/workflows/morning.yml # GitHub Actions（現在 Disabled）
+├ .github/workflows/morning.yml # GitHub Actions（Enabled）
 ├ NOTES.md                      # このファイル
-└ README.md                     # GitHub 自動生成
+└ README.md
 ```
 
 ## 環境変数
 
 | 名前 | 用途 | 必須 |
 |---|---|---|
-| `OUTPUT_PATH` | WAV保存先 | デフォルト `today.wav`、運用時は Drive パス指定 |
-| `CEREBRAS_API_KEY` | Cerebras 認証 | 任意（無ければルールベースにフォールバック） |
-| `GROQ_API_KEY` | Groq 認証（旧、現コードでは未使用） | 不要 |
+| `OUTPUT_PATH` | WAV保存先 | デフォルト `today.wav`、workflow から指定 |
+| `GITHUB_TOKEN` | GitHub Models 認証 | **GitHub Actions が自動付与** |
+| `CEREBRAS_API_KEY` | （旧）Cerebras 認証 | 現コードでは未使用、secret は残置 |
+| `GROQ_API_KEY` | （旧）Groq 認証 | 未使用 |
