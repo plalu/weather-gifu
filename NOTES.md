@@ -20,7 +20,7 @@ GitHub Releases (固定URL)
        ↓
 Android (MacroDroid 7:30 起動)
   ├ HTTPリクエスト → 上記URLから today.wav 取得
-  └ サウンド再生 (春日部つむぎ)
+  └ サウンド再生 (ずんだもん)
 ```
 
 採用理由：
