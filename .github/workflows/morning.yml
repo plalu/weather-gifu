@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  models: read
 
 jobs:
   build:
@@ -21,7 +22,7 @@ jobs:
 
       - name: Generate WAV
         env:
-          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OUTPUT_PATH: today.wav
           TZ: Asia/Tokyo
         run: python main.py
