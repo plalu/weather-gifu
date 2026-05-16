@@ -38,8 +38,9 @@ def fetch_weather():
         (a for a in ts[0]["areas"] if a["area"]["name"] == "岐阜地方"),
         ts[0]["areas"][0],
     )
-    weather_text = gifu_area["weathers"][0].replace("　", "")
-    wind_text = gifu_area["winds"][0].replace("　", "")
+    # JMAの全角スペースは読点に置換すると読み上げが自然になる
+    weather_text = gifu_area["weathers"][0].replace("　", "、").strip()
+    wind_text = gifu_area["winds"][0].replace("　", "、").strip()
 
     pops_area = next(
         (a for a in ts[1]["areas"] if a["area"]["name"] == "岐阜地方"),
@@ -79,21 +80,25 @@ def fetch_weather():
     if temp_min is None or temp_max is None:
         try:
             for s in forecast[1]["timeSeries"]:
+                defines = s.get("timeDefines", [])
                 for a in s.get("areas", []):
                     tmins = a.get("tempsMin", [])
                     tmaxs = a.get("tempsMax", [])
-                    for v in tmins:
-                        if v and temp_min is None:
-                            temp_min = int(v)
-                            break
-                    for v in tmaxs:
-                        if v and temp_max is None:
-                            temp_max = int(v)
-                            break
+                    for i, t in enumerate(defines):
+                        if not t.startswith(today_str):
+                            continue
+                        if i < len(tmins) and tmins[i] and temp_min is None:
+                            temp_min = int(tmins[i])
+                        if i < len(tmaxs) and tmaxs[i] and temp_max is None:
+                            temp_max = int(tmaxs[i])
         except Exception as e:
             print(f"[warn] week fallback failed: {e}", file=sys.stderr)
 
     print(f"[debug] temp_min={temp_min}, temp_max={temp_max}", file=sys.stderr)
+    if pop_morning is None:
+        print("[warn] pop_morning missing from JMA data", file=sys.stderr)
+    if pop_evening is None:
+        print("[warn] pop_evening missing from JMA data", file=sys.stderr)
 
     return {
         "summary": weather_text.split()[0] if weather_text else "不明",
@@ -102,16 +107,19 @@ def fetch_weather():
         "wind_text": wind_text,
         "temp_min": temp_min,
         "temp_max": temp_max,
-        "pop_morning": pop_morning if pop_morning is not None else 0,
-        "pop_noon": pop_noon if pop_noon is not None else 0,
-        "pop_evening": pop_evening if pop_evening is not None else 0,
+        # データが取れない場合はNoneのまま下流に渡し、表示側で「不明」として扱う
+        "pop_morning": pop_morning,
+        "pop_noon": pop_noon,
+        "pop_evening": pop_evening,
     }
 
 
 def wind_correction(wind_text):
+    # 「やや強」が「強く」のsubstringにマッチしないよう除外してから判定
+    without_yaya = wind_text.replace("やや強", "") if wind_text else ""
     if "非常に強" in wind_text:
         return -13
-    if "強く" in wind_text:
+    if "強く" in without_yaya:
         return -10
     if "やや強" in wind_text:
         return -7
@@ -128,17 +136,23 @@ def rule_based_advice(w, felt_temp):
     else:
         gear = "メッシュジャケットと薄手グローブで快適に走れます。"
 
-    pop_max = max(w["pop_morning"], w["pop_evening"])
-    if pop_max >= 50:
-        rain = "降水確率が高いので、長靴とレインウェアを着用してください。"
-    elif pop_max >= 30:
-        rain = "念のためレインウェアを携帯してください。"
+    known_pops = [p for p in (w["pop_morning"], w["pop_evening"]) if p is not None]
+    if not known_pops:
+        rain = "降水確率データが取得できないため、念のためレインウェアを携帯してください。"
     else:
-        rain = "雨具は不要です。"
+        pop_max = max(known_pops)
+        if pop_max >= 50:
+            rain = "降水確率が高いので、長靴とレインウェアを着用してください。"
+        elif pop_max >= 30:
+            rain = "念のためレインウェアを携帯してください。"
+        else:
+            rain = "雨具は不要です。"
     return gear + rain
 
 
 def github_models_advice(w, felt_temp, token):
+    pm = f"{w['pop_morning']}%" if w["pop_morning"] is not None else "不明"
+    pe = f"{w['pop_evening']}%" if w["pop_evening"] is not None else "不明"
     prompt = (
         "あなたは岐阜市でバイク通勤するライダー向けのアドバイザーです。"
         "以下の天気データから、80字以内の自然な日本語アドバイスを1文で生成してください。"
@@ -146,7 +160,7 @@ def github_models_advice(w, felt_temp, token):
         f"最高気温:{w['temp_max']}度 最低気温:{w['temp_min']}度 "
         f"走行時体感温度:{felt_temp}度 "
         f"風:{w['wind_text']} "
-        f"降水確率(朝):{w['pop_morning']}% (夕):{w['pop_evening']}%"
+        f"降水確率(朝):{pm} (夕):{pe}"
     )
     body = json.dumps({
         "model": GITHUB_MODEL,
@@ -188,7 +202,9 @@ def build_message(w):
     low = f"{w['temp_min']}度" if w["temp_min"] is not None else "不明"
     morning_temp = w["temp_min"] if w["temp_min"] is not None else 10
     morning = f"{morning_temp}度" if w["temp_min"] is not None else "不明"
-    pop_part = f"降水確率は朝{w['pop_morning']}パーセント、夕方{w['pop_evening']}パーセントです。"
+    pm = f"{w['pop_morning']}パーセント" if w["pop_morning"] is not None else "不明"
+    pe = f"{w['pop_evening']}パーセント" if w["pop_evening"] is not None else "不明"
+    pop_part = f"降水確率は朝{pm}、夕方{pe}です。"
     return (
         f"おはようございます。{today.month}月{today.day}日の岐阜市の天気をお伝えします。"
         f"天気は{w['weather_text']}です。"
