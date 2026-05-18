@@ -5,6 +5,7 @@ import json
 import datetime
 import urllib.request
 import urllib.parse
+import urllib.error
 
 JMA_FORECAST = "https://www.jma.go.jp/bosai/forecast/data/forecast/210000.json"
 JMA_OVERVIEW = "https://www.jma.go.jp/bosai/forecast/data/overview_forecast/210000.json"
@@ -15,10 +16,23 @@ SPEAKER_ID = 3  # ずんだもん（ノーマル）
 OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "today.wav")
 
 
-def http_json(url, headers=None, data=None, timeout=30):
-    req = urllib.request.Request(url, headers=headers or {}, data=data)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
+def http_json(url, headers=None, data=None, timeout=30, retries=2):
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, headers=headers or {}, data=data)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            raise
+        except (TimeoutError, urllib.error.URLError) as e:
+            if attempt >= retries:
+                raise
+            wait = 2 ** attempt
+            print(
+                f"[warn] http_json failed (attempt {attempt+1}/{retries+1}): {e}; retry in {wait}s",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
 
 
 def http_download(url, path, timeout=60):
@@ -221,7 +235,7 @@ def build_message(w):
 def synthesize(text, out_path):
     params = urllib.parse.urlencode({"speaker": SPEAKER_ID, "text": text})
     url = f"{TTS_QUEST_URL}?{params}"
-    res = http_json(url, timeout=30)
+    res = http_json(url, timeout=60, retries=3)
     if not res.get("success"):
         raise RuntimeError(f"TTS Quest rejected request: {res}")
 
