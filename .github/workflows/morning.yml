@@ -23,6 +23,7 @@ jobs:
       - name: Generate WAV
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_TTS_API_KEY: ${{ secrets.GOOGLE_TTS_API_KEY }}
           OUTPUT_PATH: today.wav
           TZ: Asia/Tokyo
         run: python main.py

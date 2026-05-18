@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import json
+import base64
 import datetime
 import urllib.request
 import urllib.parse
@@ -13,6 +14,8 @@ GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
 GITHUB_MODEL = "openai/gpt-4o-mini"
 TTS_QUEST_URL = "https://api.tts.quest/v3/voicevox/synthesis"
 SPEAKER_ID = 3  # ずんだもん（ノーマル）
+GOOGLE_TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
+GOOGLE_TTS_VOICE = "ja-JP-Neural2-B"
 OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "today.wav")
 
 
@@ -266,13 +269,53 @@ def synthesize(text, out_path):
         raise RuntimeError("Downloaded file is not a WAV (got: %r)" % head)
 
 
+def synthesize_google_tts(text, out_path, api_key):
+    body = json.dumps({
+        "input": {"text": text},
+        "voice": {"languageCode": "ja-JP", "name": GOOGLE_TTS_VOICE},
+        "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": 24000},
+    }).encode("utf-8")
+    url = f"{GOOGLE_TTS_URL}?key={urllib.parse.quote(api_key)}"
+    res = http_json(
+        url,
+        headers={"Content-Type": "application/json"},
+        data=body,
+        timeout=60,
+        retries=2,
+    )
+    audio = res.get("audioContent")
+    if not audio:
+        raise RuntimeError(f"Google TTS missing audioContent: {res}")
+    with open(out_path, "wb") as f:
+        f.write(base64.b64decode(audio))
+    with open(out_path, "rb") as f:
+        head = f.read(4)
+    if head != b"RIFF":
+        raise RuntimeError("Google TTS output is not a WAV (got: %r)" % head)
+
+
+def synthesize_with_fallback(text, out_path):
+    try:
+        synthesize(text, out_path)
+        return "tts-quest"
+    except Exception as e:
+        print(f"[warn] TTS Quest failed: {e}", file=sys.stderr)
+        api_key = os.environ.get("GOOGLE_TTS_API_KEY")
+        if not api_key:
+            print("[error] GOOGLE_TTS_API_KEY not set; no fallback available", file=sys.stderr)
+            raise
+        print("[info] falling back to Google Cloud TTS", file=sys.stderr)
+        synthesize_google_tts(text, out_path, api_key)
+        return "google-tts"
+
+
 def main():
     w = fetch_weather()
     print(f"[info] weather: {w['summary']} {w['temp_min']}/{w['temp_max']}", file=sys.stderr)
     msg = build_message(w)
     print(f"[info] message ({len(msg)} chars):\n{msg}", file=sys.stderr)
-    synthesize(msg, OUTPUT_PATH)
-    print(f"[info] wrote {OUTPUT_PATH}", file=sys.stderr)
+    backend = synthesize_with_fallback(msg, OUTPUT_PATH)
+    print(f"[info] wrote {OUTPUT_PATH} via {backend}", file=sys.stderr)
 
 
 if __name__ == "__main__":
