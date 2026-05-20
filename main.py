@@ -17,6 +17,9 @@ SPEAKER_ID = 3  # ずんだもん（ノーマル）
 GOOGLE_TTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
 GOOGLE_TTS_VOICE = "ja-JP-Neural2-B"
 OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "today.wav")
+JMA_MORNING_REPORT_HOUR = 5
+JMA_FRESHNESS_RETRIES = int(os.environ.get("JMA_FRESHNESS_RETRIES", "6"))
+JMA_FRESHNESS_WAIT_SECONDS = int(os.environ.get("JMA_FRESHNESS_WAIT_SECONDS", "60"))
 
 
 def http_json(url, headers=None, data=None, timeout=30, retries=2):
@@ -44,9 +47,45 @@ def http_download(url, path, timeout=60):
         f.write(r.read())
 
 
-def fetch_weather():
+def is_fresh_morning_report(forecast):
+    report_datetime = forecast[0].get("reportDatetime", "")
+    try:
+        reported_at = datetime.datetime.fromisoformat(report_datetime)
+    except ValueError:
+        return False, report_datetime
+    today = datetime.date.today()
+    return (
+        reported_at.date() == today
+        and reported_at.hour >= JMA_MORNING_REPORT_HOUR
+    ), report_datetime
+
+
+def fetch_jma_payloads():
     forecast = http_json(JMA_FORECAST, headers={"User-Agent": "weather-gifu/1.0"})
     overview = http_json(JMA_OVERVIEW, headers={"User-Agent": "weather-gifu/1.0"})
+    return forecast, overview
+
+
+def fetch_weather():
+    for attempt in range(JMA_FRESHNESS_RETRIES + 1):
+        forecast, overview = fetch_jma_payloads()
+        fresh, report_datetime = is_fresh_morning_report(forecast)
+        if fresh:
+            break
+        if attempt >= JMA_FRESHNESS_RETRIES:
+            print(
+                f"[warn] JMA report is not today's 05:00+ forecast "
+                f"(reportDatetime={report_datetime}); continuing anyway",
+                file=sys.stderr,
+            )
+            break
+        wait = JMA_FRESHNESS_WAIT_SECONDS
+        print(
+            f"[warn] JMA report not fresh yet "
+            f"(reportDatetime={report_datetime}); retry in {wait}s",
+            file=sys.stderr,
+        )
+        time.sleep(wait)
 
     today_block = forecast[0]
     ts = today_block["timeSeries"]

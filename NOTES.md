@@ -11,13 +11,13 @@
 **GitHub Actions + GitHub Models + GitHub Releases 配信方式**
 
 ```
-GitHub Actions (毎朝 06:25 JST = 21:25 UTC cron)
+GitHub Actions (毎朝 05:15 JST = 20:15 UTC cron)
   ├ python main.py 実行
-  │   ├ 気象庁API (210000) → 天気/気温/降水確率
+  │   ├ 気象庁API (210000) → 今日05:00以降の発表か確認 → 天気/気温/降水確率
   │   ├ GitHub Models (openai/gpt-4o-mini) → AIアドバイス生成
   │   └ TTS Quest VOICEVOX API → WAV合成
   │
-  └ gh release create today today.wav (上書き)
+  └ gh release upload today today.wav --clobber (固定Releaseへ上書き)
        ↓
 GitHub Releases (固定URL)
   https://github.com/plalu/weather-gifu/releases/download/today/today.wav
@@ -118,8 +118,8 @@ GitHub Models が落ちた・廃止された場合の選択肢。
 
 ### GitHub Actions 関連
 
-8. **cron は UTC**。`'25 21 * * *'` で JST 06:25 起動。
-9. **最大 15 分の遅延あり**。クリティカルな時刻指定は要バッファ。
+8. **cron は UTC**。`'15 20 * * *'` で JST 05:15 起動。
+9. **GitHub Actions の schedule は大きく遅延することがある**。7:30利用に間に合わせるため、気象庁05:00発表の少し後に起動して遅延バッファを取る。
 10. **長期間 push のないリポジトリは workflow が自動 disable** される場合あり。
     `disabled_manually` 状態になったら手動で再 enable が必要。
 
@@ -143,7 +143,6 @@ GitHub Models が落ちた・廃止された場合の選択肢。
 - [ ] **生成失敗時の通知**：失敗時に Slack/LINE/メール通知（前日WAV再生を防ぐ）
 - [ ] **メタデータ同時出力**：`today.json` に生成時刻を入れ、MacroDroid側で当日チェック
 - [ ] **温度サニティチェック**：気温が -10℃ 未満 / 50℃ 超なら警告（JMAパースバグ早期発見）
-- [ ] **Release のアトミック更新**：delete→create の隙間 404 を避ける（`gh release upload --clobber`）
 
 ### 中長期改善
 
@@ -161,6 +160,8 @@ GitHub Models が落ちた・廃止された場合の選択肢。
 - [x] **降水確率の「データなし」と「0%」を区別**（"不明" 表示で誤誘導を防止、2026-05-16）
 - [x] **週間予報フォールバックを今日の日付で照合**（明日の気温を拾うリスク解消、2026-05-16）
 - [x] **Release notes のタイムスタンプを JST に統一**（Upload step に `TZ` 追加、2026-05-16）
+- [x] **GitHub Actions 遅延対策**（05:15 JST 起動へ前倒し、JMA 05:00以降発表チェックを追加、2026-05-20）
+- [x] **Release の途切れ対策**（delete→create から `gh release upload --clobber` へ変更、2026-05-20）
 
 ---
 
