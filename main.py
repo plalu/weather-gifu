@@ -10,6 +10,8 @@ import urllib.error
 
 JMA_FORECAST = "https://www.jma.go.jp/bosai/forecast/data/forecast/210000.json"
 JMA_OVERVIEW = "https://www.jma.go.jp/bosai/forecast/data/overview_forecast/210000.json"
+JMA_AMEDAS_LATEST = "https://www.jma.go.jp/bosai/amedas/data/latest_time.txt"
+JMA_AMEDAS_POINT_URL = "https://www.jma.go.jp/bosai/amedas/data/point/{point}/{date}_{hour:02d}.json"
 GITHUB_MODELS_URL = "https://models.github.ai/inference/chat/completions"
 GITHUB_MODEL = "openai/gpt-4o-mini"
 TTS_QUEST_URL = "https://api.tts.quest/v3/voicevox/synthesis"
@@ -20,6 +22,10 @@ OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "today.wav")
 JMA_MORNING_REPORT_HOUR = 5
 JMA_FRESHNESS_RETRIES = int(os.environ.get("JMA_FRESHNESS_RETRIES", "6"))
 JMA_FRESHNESS_WAIT_SECONDS = int(os.environ.get("JMA_FRESHNESS_WAIT_SECONDS", "60"))
+JMA_WEATHER_AREA_NAME = "美濃地方"
+JMA_WEATHER_AREA_CODE = "210010"
+JMA_TEMP_AREA_NAME = "岐阜"
+JMA_TEMP_AREA_CODE = "52586"
 
 
 def http_json(url, headers=None, data=None, timeout=30, retries=2):
@@ -47,6 +53,12 @@ def http_download(url, path, timeout=60):
         f.write(r.read())
 
 
+def http_text(url, timeout=30):
+    req = urllib.request.Request(url, headers={"User-Agent": "weather-gifu/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8").strip()
+
+
 def is_fresh_morning_report(forecast):
     report_datetime = forecast[0].get("reportDatetime", "")
     try:
@@ -64,6 +76,52 @@ def fetch_jma_payloads():
     forecast = http_json(JMA_FORECAST, headers={"User-Agent": "weather-gifu/1.0"})
     overview = http_json(JMA_OVERVIEW, headers={"User-Agent": "weather-gifu/1.0"})
     return forecast, overview
+
+
+def first_observed_value(payload, key):
+    for _, values in sorted(payload.items(), reverse=True):
+        item = values.get(key)
+        if item and item[0] is not None:
+            return item[0]
+    return None
+
+
+def fetch_current_amedas():
+    try:
+        latest_text = http_text(JMA_AMEDAS_LATEST, timeout=20)
+        latest_at = datetime.datetime.fromisoformat(latest_text)
+        hour_block = (latest_at.hour // 3) * 3
+        url = JMA_AMEDAS_POINT_URL.format(
+            point=JMA_TEMP_AREA_CODE,
+            date=latest_at.strftime("%Y%m%d"),
+            hour=hour_block,
+        )
+        payload = http_json(url, headers={"User-Agent": "weather-gifu/1.0"}, timeout=20)
+        return {
+            "observed_at": latest_text,
+            "current_temp": first_observed_value(payload, "temp"),
+            "observed_min": first_observed_value(payload, "minTemp"),
+            "observed_max": first_observed_value(payload, "maxTemp"),
+        }
+    except Exception as e:
+        print(f"[warn] amedas failed: {e}", file=sys.stderr)
+        return {}
+
+
+def select_area(areas, preferred_name, preferred_code, label):
+    for area in areas:
+        meta = area.get("area", {})
+        if meta.get("code") == preferred_code or meta.get("name") == preferred_name:
+            return area
+
+    fallback = areas[0]
+    fallback_meta = fallback.get("area", {})
+    print(
+        f"[warn] {label} area {preferred_name}({preferred_code}) not found; "
+        f"using {fallback_meta.get('name')}({fallback_meta.get('code')})",
+        file=sys.stderr,
+    )
+    return fallback
 
 
 def fetch_weather():
@@ -90,17 +148,21 @@ def fetch_weather():
     today_block = forecast[0]
     ts = today_block["timeSeries"]
 
-    gifu_area = next(
-        (a for a in ts[0]["areas"] if a["area"]["name"] == "岐阜地方"),
-        ts[0]["areas"][0],
+    gifu_area = select_area(
+        ts[0]["areas"],
+        JMA_WEATHER_AREA_NAME,
+        JMA_WEATHER_AREA_CODE,
+        "weather",
     )
     # JMAの全角スペースは読点に置換すると読み上げが自然になる
     weather_text = gifu_area["weathers"][0].replace("　", "、").strip()
     wind_text = gifu_area["winds"][0].replace("　", "、").strip()
 
-    pops_area = next(
-        (a for a in ts[1]["areas"] if a["area"]["name"] == "岐阜地方"),
-        ts[1]["areas"][0],
+    pops_area = select_area(
+        ts[1]["areas"],
+        JMA_WEATHER_AREA_NAME,
+        JMA_WEATHER_AREA_CODE,
+        "precipitation",
     )
     pop_defines = ts[1]["timeDefines"]
     pops = pops_area["pops"]
@@ -119,38 +181,62 @@ def fetch_weather():
 
     temp_min = temp_max = None
     for series in ts:
-        for area in series.get("areas", []):
-            if "temps" not in area:
+        temp_areas = [a for a in series.get("areas", []) if "temps" in a]
+        if not temp_areas:
+            continue
+        area = select_area(temp_areas, JMA_TEMP_AREA_NAME, JMA_TEMP_AREA_CODE, "temperature")
+        defines = series["timeDefines"]
+        temps = area["temps"]
+        for t, v in zip(defines, temps):
+            if not v or not t.startswith(today_str):
                 continue
-            defines = series["timeDefines"]
-            temps = area["temps"]
-            for t, v in zip(defines, temps):
-                if not v or not t.startswith(today_str):
-                    continue
-                hour = int(t[11:13])
-                if hour < 9 and temp_min is None:
-                    temp_min = int(v)
-                elif hour >= 9 and temp_max is None:
-                    temp_max = int(v)
+            hour = int(t[11:13])
+            if hour < 9 and temp_min is None:
+                temp_min = int(v)
+            elif hour >= 9 and temp_max is None:
+                temp_max = int(v)
 
     if temp_min is None or temp_max is None:
         try:
             for s in forecast[1]["timeSeries"]:
                 defines = s.get("timeDefines", [])
-                for a in s.get("areas", []):
-                    tmins = a.get("tempsMin", [])
-                    tmaxs = a.get("tempsMax", [])
-                    for i, t in enumerate(defines):
-                        if not t.startswith(today_str):
-                            continue
-                        if i < len(tmins) and tmins[i] and temp_min is None:
-                            temp_min = int(tmins[i])
-                        if i < len(tmaxs) and tmaxs[i] and temp_max is None:
-                            temp_max = int(tmaxs[i])
+                temp_areas = [
+                    a for a in s.get("areas", [])
+                    if "tempsMin" in a or "tempsMax" in a
+                ]
+                if not temp_areas:
+                    continue
+                a = select_area(
+                    temp_areas,
+                    JMA_TEMP_AREA_NAME,
+                    JMA_TEMP_AREA_CODE,
+                    "weekly temperature",
+                )
+                tmins = a.get("tempsMin", [])
+                tmaxs = a.get("tempsMax", [])
+                for i, t in enumerate(defines):
+                    if not t.startswith(today_str):
+                        continue
+                    if i < len(tmins) and tmins[i] and temp_min is None:
+                        temp_min = int(tmins[i])
+                    if i < len(tmaxs) and tmaxs[i] and temp_max is None:
+                        temp_max = int(tmaxs[i])
         except Exception as e:
             print(f"[warn] week fallback failed: {e}", file=sys.stderr)
 
-    print(f"[debug] temp_min={temp_min}, temp_max={temp_max}", file=sys.stderr)
+    amedas = fetch_current_amedas()
+    current_temp = amedas.get("current_temp")
+    observed_min = amedas.get("observed_min")
+    observed_max = amedas.get("observed_max")
+    if observed_min is not None and (temp_min is None or observed_min < temp_min):
+        temp_min = round(observed_min)
+    if observed_max is not None and temp_max is None:
+        temp_max = round(observed_max)
+
+    print(
+        f"[debug] temp_min={temp_min}, temp_max={temp_max}, current_temp={current_temp}",
+        file=sys.stderr,
+    )
     if pop_morning is None:
         print("[warn] pop_morning missing from JMA data", file=sys.stderr)
     if pop_evening is None:
@@ -163,6 +249,8 @@ def fetch_weather():
         "wind_text": wind_text,
         "temp_min": temp_min,
         "temp_max": temp_max,
+        "current_temp": round(current_temp) if current_temp is not None else None,
+        "observed_at": amedas.get("observed_at"),
         # データが取れない場合はNoneのまま下流に渡し、表示側で「不明」として扱う
         "pop_morning": pop_morning,
         "pop_noon": pop_noon,
@@ -209,11 +297,13 @@ def rule_based_advice(w, felt_temp):
 def github_models_advice(w, felt_temp, token):
     pm = f"{w['pop_morning']}%" if w["pop_morning"] is not None else "不明"
     pe = f"{w['pop_evening']}%" if w["pop_evening"] is not None else "不明"
+    current = f"{w['current_temp']}度" if w["current_temp"] is not None else "不明"
     prompt = (
         "あなたは岐阜市でバイク通勤するライダー向けのアドバイザーです。"
         "以下の天気データから、80字以内の自然な日本語アドバイスを1文で生成してください。"
         "装備（グローブ・ジャケット・防寒）と雨具の要否に必ず触れてください。\n"
         f"最高気温:{w['temp_max']}度 最低気温:{w['temp_min']}度 "
+        f"岐阜市の観測気温:{current} "
         f"走行時体感温度:{felt_temp}度 "
         f"風:{w['wind_text']} "
         f"降水確率(朝):{pm} (夕):{pe}"
@@ -238,7 +328,9 @@ def github_models_advice(w, felt_temp, token):
 
 
 def build_advice(w):
-    base_temp = w["temp_min"] if w["temp_min"] is not None else 10
+    base_temp = w["current_temp"] if w["current_temp"] is not None else w["temp_min"]
+    if base_temp is None:
+        base_temp = 10
     felt_temp = base_temp + wind_correction(w["wind_text"])
 
     token = os.environ.get("GITHUB_TOKEN")
@@ -256,8 +348,7 @@ def build_message(w):
     felt_temp, advice = build_advice(w)
     high = f"{w['temp_max']}度" if w["temp_max"] is not None else "不明"
     low = f"{w['temp_min']}度" if w["temp_min"] is not None else "不明"
-    morning_temp = w["temp_min"] if w["temp_min"] is not None else 10
-    morning = f"{morning_temp}度" if w["temp_min"] is not None else "不明"
+    morning = f"{w['current_temp']}度" if w["current_temp"] is not None else "不明"
     pm = f"{w['pop_morning']}パーセント" if w["pop_morning"] is not None else "不明"
     pe = f"{w['pop_evening']}パーセント" if w["pop_evening"] is not None else "不明"
     pop_part = f"降水確率は朝{pm}、夕方{pe}です。"
@@ -268,7 +359,7 @@ def build_message(w):
         f"風は{w['wind_text']}の予報です。"
         f"{pop_part}"
         f"バイク通勤アドバイスです。"
-        f"朝の気温は{morning}ですが、走行風で体感温度は{felt_temp}度前後になります。"
+        f"朝の岐阜市の気温は{morning}、走行風で体感温度は{felt_temp}度前後になります。"
         f"{advice}"
         f"本日も安全運転でいってらっしゃい。"
     )
