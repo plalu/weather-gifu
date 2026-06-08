@@ -3,6 +3,7 @@ name: morning-weather
 on:
   schedule:
     - cron: '15 20 * * *'
+    - cron: '15 21 * * *'
   workflow_dispatch:
 
 permissions:
@@ -12,7 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -26,6 +27,8 @@ jobs:
           GOOGLE_TTS_API_KEY: ${{ secrets.GOOGLE_TTS_API_KEY }}
           JMA_FRESHNESS_RETRIES: 6
           JMA_FRESHNESS_WAIT_SECONDS: 60
+          JMA_HTTP_RETRIES: 4
+          JMA_HTTP_WAIT_SECONDS: 60
           OUTPUT_PATH: today.wav
           TZ: Asia/Tokyo
         run: python main.py

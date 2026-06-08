@@ -26,25 +26,54 @@ JMA_WEATHER_AREA_NAME = "美濃地方"
 JMA_WEATHER_AREA_CODE = "210010"
 JMA_TEMP_AREA_NAME = "岐阜"
 JMA_TEMP_AREA_CODE = "52586"
+JMA_HTTP_RETRIES = int(os.environ.get("JMA_HTTP_RETRIES", "4"))
+JMA_HTTP_WAIT_SECONDS = int(os.environ.get("JMA_HTTP_WAIT_SECONDS", "60"))
 
 
-def http_json(url, headers=None, data=None, timeout=30, retries=2):
+def http_json(
+    url,
+    headers=None,
+    data=None,
+    timeout=30,
+    retries=2,
+    retry_wait_seconds=None,
+    retry_http_statuses=None,
+):
+    retry_http_statuses = set(retry_http_statuses or [])
     for attempt in range(retries + 1):
         try:
             req = urllib.request.Request(url, headers=headers or {}, data=data)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError:
-            raise
+        except urllib.error.HTTPError as e:
+            if e.code not in retry_http_statuses or attempt >= retries:
+                raise
+            wait = retry_wait_seconds if retry_wait_seconds is not None else 2 ** attempt
+            print(
+                f"[warn] http_json got HTTP {e.code} "
+                f"(attempt {attempt+1}/{retries+1}); retry in {wait}s",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
         except (TimeoutError, urllib.error.URLError) as e:
             if attempt >= retries:
                 raise
-            wait = 2 ** attempt
+            wait = retry_wait_seconds if retry_wait_seconds is not None else 2 ** attempt
             print(
                 f"[warn] http_json failed (attempt {attempt+1}/{retries+1}): {e}; retry in {wait}s",
                 file=sys.stderr,
             )
             time.sleep(wait)
+
+
+def http_json_jma(url):
+    return http_json(
+        url,
+        headers={"User-Agent": "weather-gifu/1.0"},
+        retries=JMA_HTTP_RETRIES,
+        retry_wait_seconds=JMA_HTTP_WAIT_SECONDS,
+        retry_http_statuses={404, 429, 500, 502, 503, 504},
+    )
 
 
 def http_download(url, path, timeout=60):
@@ -73,8 +102,8 @@ def is_fresh_morning_report(forecast):
 
 
 def fetch_jma_payloads():
-    forecast = http_json(JMA_FORECAST, headers={"User-Agent": "weather-gifu/1.0"})
-    overview = http_json(JMA_OVERVIEW, headers={"User-Agent": "weather-gifu/1.0"})
+    forecast = http_json_jma(JMA_FORECAST)
+    overview = http_json_jma(JMA_OVERVIEW)
     return forecast, overview
 
 
@@ -365,6 +394,18 @@ def build_message(w):
     )
 
 
+def build_failure_message(error):
+    today = datetime.date.today()
+    error_name = type(error).__name__
+    return (
+        f"おはようございます。{today.month}月{today.day}日の岐阜市の天気音声は、"
+        f"天気データを取得できなかったため生成に失敗しました。"
+        f"昨日の天気を誤ってお伝えしないよう、失敗のお知らせに差し替えています。"
+        f"お出かけ前に、気象庁や天気アプリで最新の天気を確認してください。"
+        f"エラー種別は{error_name}です。"
+    )
+
+
 def synthesize(text, out_path):
     params = urllib.parse.urlencode({"speaker": SPEAKER_ID, "text": text})
     url = f"{TTS_QUEST_URL}?{params}"
@@ -440,9 +481,13 @@ def synthesize_with_fallback(text, out_path):
 
 
 def main():
-    w = fetch_weather()
-    print(f"[info] weather: {w['summary']} {w['temp_min']}/{w['temp_max']}", file=sys.stderr)
-    msg = build_message(w)
+    try:
+        w = fetch_weather()
+        print(f"[info] weather: {w['summary']} {w['temp_min']}/{w['temp_max']}", file=sys.stderr)
+        msg = build_message(w)
+    except Exception as e:
+        print(f"[error] weather generation failed; writing failure audio: {e}", file=sys.stderr)
+        msg = build_failure_message(e)
     print(f"[info] message ({len(msg)} chars):\n{msg}", file=sys.stderr)
     backend = synthesize_with_fallback(msg, OUTPUT_PATH)
     print(f"[info] wrote {OUTPUT_PATH} via {backend}", file=sys.stderr)
