@@ -2,7 +2,10 @@ name: morning-weather
 
 on:
   schedule:
+    - cron: '45 19 * * *'
+    - cron: '00 20 * * *'
     - cron: '15 20 * * *'
+    - cron: '45 20 * * *'
     - cron: '15 21 * * *'
   workflow_dispatch:
 
@@ -25,7 +28,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_TTS_API_KEY: ${{ secrets.GOOGLE_TTS_API_KEY }}
-          JMA_FRESHNESS_RETRIES: 6
+          JMA_FRESHNESS_RETRIES: 30
           JMA_FRESHNESS_WAIT_SECONDS: 60
           JMA_HTTP_RETRIES: 4
           JMA_HTTP_WAIT_SECONDS: 60
